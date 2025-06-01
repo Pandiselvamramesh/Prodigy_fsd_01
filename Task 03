@@ -1,0 +1,141 @@
+// server.js
+const express = require('express');
+const mongoose = require('mongoose');
+const path = require('path');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const cors = require('cors');
+const fs = require('fs');
+
+require('dotenv').config();
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+app.use(express.static('public'));
+
+const PORT = process.env.PORT || 5000;
+const JWT_SECRET = process.env.JWT_SECRET || 'secret123';
+
+// Connect MongoDB
+mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/ecommerce', {
+  useNewUrlParser: true,
+  useUnifiedTopology: true
+});
+
+// Models
+const productSchema = new mongoose.Schema({
+  name: String,
+  description: String,
+  price: Number,
+  image: String
+});
+const Product = mongoose.model('Product', productSchema);
+
+const userSchema = new mongoose.Schema({
+  username: String,
+  password: String
+});
+const User = mongoose.model('User', userSchema);
+
+// Auth Middleware
+function auth(req, res, next) {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ message: 'Unauthorized' });
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch {
+    return res.status(401).json({ message: 'Invalid Token' });
+  }
+}
+
+// Routes
+app.post('/api/register', async (req, res) => {
+  const { username, password } = req.body;
+  const hash = await bcrypt.hash(password, 10);
+  const user = new User({ username, password: hash });
+  await user.save();
+  res.json({ message: 'User registered' });
+});
+
+app.post('/api/login', async (req, res) => {
+  const { username, password } = req.body;
+  const user = await User.findOne({ username });
+  if (!user) return res.status(400).json({ message: 'Invalid credentials' });
+  const isMatch = await bcrypt.compare(password, user.password);
+  if (!isMatch) return res.status(400).json({ message: 'Invalid credentials' });
+  const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: '1h' });
+  res.json({ token });
+});
+
+app.get('/api/products', async (req, res) => {
+  const products = await Product.find();
+  res.json(products);
+});
+
+app.post('/api/products', auth, async (req, res) => {
+  const { name, description, price, image } = req.body;
+  const product = new Product({ name, description, price, image });
+  await product.save();
+  res.status(201).json(product);
+});
+
+// Serve simple React UI
+app.get('/', (req, res) => {
+  res.send(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>ProDigy E-Commerce</title>
+  <style>
+    body { font-family: sans-serif; margin: 40px; }
+    .product { border: 1px solid #ccc; padding: 10px; margin: 10px; width: 200px; display: inline-block; vertical-align: top; }
+    .product img { width: 100%; height: 150px; object-fit: cover; }
+    .cart { position: fixed; top: 10px; right: 10px; background: red; color: white; padding: 8px 12px; border-radius: 50%; }
+  </style>
+</head>
+<body>
+  <h1>🛍️ ProDigy Store</h1>
+  <div id="products"></div>
+  <div class="cart" id="cartCount">0</div>
+
+  <script>
+    const cart = JSON.parse(localStorage.getItem('cart') || '[]');
+    document.getElementById('cartCount').innerText = cart.length;
+
+    fetch('/api/products')
+      .then(res => res.json())
+      .then(products => {
+        const container = document.getElementById('products');
+        products.forEach(p => {
+          const div = document.createElement('div');
+          div.className = 'product';
+          div.innerHTML = \`
+            <img src="\${p.image}" />
+            <h3>\${p.name}</h3>
+            <p>\${p.description}</p>
+            <strong>₹\${p.price}</strong><br/>
+            <button>Add to Cart</button>
+          \`;
+          div.querySelector('button').onclick = () => {
+            cart.push(p);
+            localStorage.setItem('cart', JSON.stringify(cart));
+            document.getElementById('cartCount').innerText = cart.length;
+            alert('Added to cart!');
+          };
+          container.appendChild(div);
+        });
+      });
+  </script>
+</body>
+</html>
+  `);
+});
+
+// Start server
+app.listen(PORT, () => {
+  console.log(`🚀 ProDigy E-Commerce running at http://localhost:${PORT}`);
+});
